@@ -13,6 +13,8 @@ pub const BTN: Color32 = Color32::from_rgb(0x3c, 0x3c, 0x3c);
 pub const BTN_STROKE: Color32 = Color32::from_rgb(0x55, 0x55, 0x55);
 pub const ACCENT: Color32 = Color32::from_rgb(0x00, 0x7a, 0xcc);
 pub const ACCENT_2: Color32 = Color32::from_rgb(0x4f, 0xc3, 0xf7);
+/// Moving-average trace and readout.
+pub const AVG: Color32 = Color32::from_rgb(0xff, 0xa7, 0x26);
 pub const TEXT: Color32 = Color32::from_rgb(0xe8, 0xe8, 0xe8);
 pub const MUTED: Color32 = Color32::from_rgb(0x9b, 0x9b, 0x9b);
 pub const OK: Color32 = Color32::from_rgb(0x3d, 0xdc, 0x97);

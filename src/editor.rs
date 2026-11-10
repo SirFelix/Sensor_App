@@ -364,8 +364,35 @@ impl Editor {
                 ui.label("Points before scrolling");
                 ui.add(DragValue::new(&mut cfg.visible_points).range(10..=1_000_000).speed(5.0));
                 ui.end_row();
+                ui.label("Graph motion");
+                ui.horizontal(|ui| {
+                    for mode in [ScrollMode::Continuous, ScrollMode::Step] {
+                        ui.radio_value(&mut cfg.scroll_mode, mode, mode.label());
+                    }
+                    if cfg.scroll_mode == ScrollMode::Step {
+                        ui.label(RichText::new("by").color(MUTED));
+                        ui.add(DragValue::new(&mut cfg.step_points).range(1..=cfg.visible_points.max(1)).speed(5.0).suffix(" pts"));
+                    }
+                });
+                ui.end_row();
+                ui.label("");
+                ui.label(
+                    RichText::new("Slide keeps the newest reading at the right edge. Step holds the graph still while it fills, then jumps over by the step.")
+                        .size(12.0)
+                        .color(MUTED),
+                );
+                ui.end_row();
                 ui.label("Decimals shown");
                 ui.add(DragValue::new(&mut cfg.decimals).range(0..=8));
+                ui.end_row();
+                ui.label("Show");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut cfg.show_raw, "Raw trace & reading");
+                    ui.checkbox(&mut cfg.show_avg, "Moving average");
+                });
+                ui.end_row();
+                ui.label("Average over");
+                ui.add(DragValue::new(&mut cfg.avg_points).range(2..=100_000).speed(1.0).suffix(" pts"));
                 ui.end_row();
             });
         });

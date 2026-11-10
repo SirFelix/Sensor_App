@@ -282,6 +282,26 @@ impl Default for SimSettings {
     }
 }
 
+/// How the live graph moves once it is full.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScrollMode {
+    /// Slides continuously with the newest reading at the right edge.
+    #[default]
+    Continuous,
+    /// Holds still while new readings fill the right side, then jumps left by
+    /// `step_points` to open a fresh gap.
+    Step,
+}
+
+impl ScrollMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            ScrollMode::Continuous => "Slide",
+            ScrollMode::Step => "Step",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SensorConfig {
@@ -305,7 +325,15 @@ pub struct SensorConfig {
 
     /// Points shown before the graph starts scrolling.
     pub visible_points: usize,
+    pub scroll_mode: ScrollMode,
+    /// Points the graph jumps by in `ScrollMode::Step`.
+    pub step_points: usize,
     pub decimals: usize,
+
+    pub show_raw: bool,
+    /// Moving-average trace and readout over the last `avg_points` samples.
+    pub show_avg: bool,
+    pub avg_points: usize,
 }
 
 impl Default for SensorConfig {
@@ -327,7 +355,12 @@ impl Default for SensorConfig {
             clamp_to_range: false,
             range_as_axis: false,
             visible_points: 500,
+            scroll_mode: ScrollMode::Continuous,
+            step_points: 250,
             decimals: 2,
+            show_raw: true,
+            show_avg: false,
+            avg_points: 20,
         }
     }
 }

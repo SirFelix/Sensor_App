@@ -1,0 +1,4 @@
+# Link the C runtime into the exe. A normal MSVC build needs VCRUNTIME140.dll,
+# which is only present where the Visual C++ redistributable is installed.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

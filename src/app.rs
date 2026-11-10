@@ -86,6 +86,15 @@ impl SensorPlotterApp {
         self.toast = Some((msg.into(), self.clock.now() + if error { 8.0 } else { 4.0 }, error));
     }
 
+    /// A live tile is expanded: the top bar is hidden so the graph fills the window.
+    fn live_fullscreen(&self) -> bool {
+        self.review.is_none() && self.expanded.is_some_and(|id| self.sensors.iter().any(|s| s.cfg.id == id))
+    }
+
+    fn review_fullscreen(&self) -> bool {
+        self.review.as_ref().is_some_and(|r| self.review_expanded.is_some_and(|i| i < r.channels.len()))
+    }
+
     fn sensor_mut(&mut self, id: u64) -> Option<&mut Sensor> {
         self.sensors.iter_mut().find(|s| s.cfg.id == id)
     }
@@ -95,9 +104,8 @@ impl SensorPlotterApp {
         if let Some(s) = self.sensor_mut(id) {
             s.source = Some(sources::spawn(&s.cfg, &clock));
             s.status = Status::Connecting;
-            s.history.clear();
+            s.clear_graph(clock.now());
             s.last = None;
-            s.origin = clock.now();
         }
     }
 
@@ -203,14 +211,43 @@ impl SensorPlotterApp {
             TileAction::Clear => {
                 let now = self.clock.now();
                 if let Some(s) = self.sensor_mut(id) {
-                    s.history.clear();
-                    s.origin = now;
+                    s.clear_graph(now);
                 }
             }
             TileAction::SetPoints(n) => {
                 if let Some(s) = self.sensor_mut(id) {
                     s.cfg.visible_points = n;
                     s.trim();
+                    s.reset_view();
+                }
+            }
+            TileAction::ToggleRaw | TileAction::ToggleAvg => {
+                if let Some(s) = self.sensor_mut(id) {
+                    let cfg = &mut s.cfg;
+                    if matches!(act, TileAction::ToggleRaw) {
+                        cfg.show_raw = !cfg.show_raw;
+                        cfg.show_avg |= !cfg.show_raw;
+                    } else {
+                        cfg.show_avg = !cfg.show_avg;
+                        cfg.show_raw |= !cfg.show_avg;
+                    }
+                    s.y_view.set(None);
+                }
+            }
+            TileAction::SetAvgPoints(n) => {
+                if let Some(s) = self.sensor_mut(id) {
+                    s.cfg.avg_points = n;
+                }
+            }
+            TileAction::SetScrollMode(mode) => {
+                if let Some(s) = self.sensor_mut(id) {
+                    s.cfg.scroll_mode = mode;
+                    s.reset_view();
+                }
+            }
+            TileAction::SetStepPoints(n) => {
+                if let Some(s) = self.sensor_mut(id) {
+                    s.cfg.step_points = n;
                 }
             }
         }
@@ -226,8 +263,12 @@ impl SensorPlotterApp {
         let id = cfg.id;
         let Some(s) = self.sensor_mut(id) else { return };
         let reconnect = s.connected() && s.cfg.connection_key() != cfg.connection_key();
+        if !cfg.show_raw && !cfg.show_avg {
+            cfg.show_raw = true;
+        }
         s.cfg = cfg;
         s.trim();
+        s.reset_view();
         if reconnect {
             self.connect(id);
         }
@@ -361,12 +402,18 @@ impl SensorPlotterApp {
     fn board(&mut self, ui: &mut Ui) {
         let mut actions: Vec<(u64, TileAction)> = Vec::new();
         let recording = self.recorder.as_ref().is_some_and(|r| r.state == RecState::Recording);
+        let now = self.clock.now();
+        let rec_label = self.recorder.as_ref().map(|r| match r.state {
+            RecState::Recording => (format!("● REC {}", tiles::fmt_duration(r.recorded_secs(now))), ERR),
+            RecState::Paused => (format!("❚❚ PAUSED {}", tiles::fmt_duration(r.recorded_secs(now))), WARN),
+        });
         let mut add_clicked = false;
         let mut demo_clicked = false;
         let mut open_clicked = false;
+        let full = self.live_fullscreen();
 
         egui::CentralPanel::default()
-            .frame(Frame::new().fill(BG).inner_margin(24))
+            .frame(Frame::new().fill(BG).inner_margin(if full { 6 } else { 24 }))
             .show(ui, |ui| {
                 if self.sensors.is_empty() {
                     (add_clicked, demo_clicked, open_clicked) = empty_state(ui);
@@ -374,10 +421,10 @@ impl SensorPlotterApp {
                 }
                 if let Some(id) = self.expanded
                     && let Some(s) = self.sensors.iter().find(|s| s.cfg.id == id) {
-                        tiles::tile_frame().show(ui, |ui| {
+                        tiles::tile_frame().inner_margin(10).show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.set_height(ui.available_height());
-                            if let Some(a) = tiles::live_tile(ui, s, true, recording) {
+                            if let Some(a) = tiles::live_tile_full(ui, s, now, rec_label) {
                                 actions.push((id, a));
                             }
                         });
@@ -385,7 +432,7 @@ impl SensorPlotterApp {
                     }
                 tile_grid(ui, self.sensors.len(), |ui, i| {
                     let s = &self.sensors[i];
-                    if let Some(a) = tiles::live_tile(ui, s, false, recording) {
+                    if let Some(a) = tiles::live_tile(ui, s, now, recording) {
                         actions.push((s.cfg.id, a));
                     }
                 });
@@ -408,32 +455,35 @@ impl SensorPlotterApp {
     fn review_board(&mut self, ui: &mut Ui) {
         let mut close = false;
         let mut expand: Option<Option<usize>> = None;
+        let full = self.review_fullscreen();
         let Some(review) = &self.review else { return };
 
-        egui::Panel::top("review_bar")
-            .frame(Frame::new().fill(Color32::from_rgb(0x1f, 0x2a, 0x33)).inner_margin(egui::Margin::symmetric(24, 10)))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Reviewing").color(ACCENT_2).strong());
-                    ui.label(RichText::new(&review.title).strong());
-                    ui.label(RichText::new(review.path.display().to_string()).size(12.0).color(MUTED));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if primary(ui, "Back to live").clicked() {
-                            close = true;
-                        }
-                        if ui.button("Show in Explorer").clicked() {
-                            let target = if review.path.is_dir() { review.path.clone() } else { review.path.parent().map(|p| p.to_path_buf()).unwrap_or_default() };
-                            let _ = std::process::Command::new("explorer").arg(target).spawn();
-                        }
+        if !full {
+            egui::Panel::top("review_bar")
+                .frame(Frame::new().fill(Color32::from_rgb(0x1f, 0x2a, 0x33)).inner_margin(egui::Margin::symmetric(24, 10)))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Reviewing").color(ACCENT_2).strong());
+                        ui.label(RichText::new(&review.title).strong());
+                        ui.label(RichText::new(review.path.display().to_string()).size(12.0).color(MUTED));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if primary(ui, "Back to live").clicked() {
+                                close = true;
+                            }
+                            if ui.button("Show in Explorer").clicked() {
+                                let target = if review.path.is_dir() { review.path.clone() } else { review.path.parent().map(|p| p.to_path_buf()).unwrap_or_default() };
+                                let _ = std::process::Command::new("explorer").arg(target).spawn();
+                            }
+                        });
                     });
                 });
-            });
+        }
 
         egui::CentralPanel::default()
-            .frame(Frame::new().fill(BG).inner_margin(24))
+            .frame(Frame::new().fill(BG).inner_margin(if full { 6 } else { 24 }))
             .show(ui, |ui| {
                 if let Some(i) = self.review_expanded.filter(|&i| i < review.channels.len()) {
-                    tiles::tile_frame().show(ui, |ui| {
+                    tiles::tile_frame().inner_margin(10).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.set_height(ui.available_height());
                         if let Some(TileAction::Collapse) = tiles::review_tile(ui, &review.channels[i], i, true) {
@@ -647,16 +697,21 @@ impl eframe::App for SensorPlotterApp {
         let ctx = ui.ctx().clone();
         self.drain_sources();
 
-        let busy = self.recorder.is_some() || self.sensors.iter().any(Sensor::connected);
-        if busy {
-            ctx.request_repaint_after(Duration::from_millis(33));
+        // Live graphs redraw every display refresh (vsync-paced) so scrolling
+        // advances at an even cadence instead of on a drifting timer.
+        if self.sensors.iter().any(Sensor::connected) {
+            ctx.request_repaint();
+        } else if self.recorder.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(250));
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && self.editor.is_none() && self.browser.is_none() {
             self.expanded = None;
             self.review_expanded = None;
         }
 
-        self.top_bar(ui);
+        if !self.live_fullscreen() && !self.review_fullscreen() {
+            self.top_bar(ui);
+        }
         if self.review.is_some() {
             self.review_board(ui);
         } else {
@@ -678,7 +733,7 @@ impl eframe::App for SensorPlotterApp {
         eframe::set_value(storage, eframe::APP_KEY, &saved);
     }
 
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.stop_recording();
     }
 }
@@ -689,7 +744,10 @@ fn brand(ui: &mut Ui) {
     ui.painter().add(mesh);
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
-        ui.label(RichText::new("Sensor Plotter").size(20.0).strong());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Sensor Plotter").size(20.0).strong());
+            ui.label(RichText::new(env!("CARGO_PKG_VERSION")).size(12.0).color(MUTED));
+        });
         ui.label(RichText::new("Live sensor readings, scaling, and recording").size(12.0).color(MUTED));
     });
 }
